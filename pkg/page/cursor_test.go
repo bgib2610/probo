@@ -151,6 +151,23 @@ func (f testMappedOrderField) MapCursorValue(placeholder string) string {
 	return "sort_key(" + placeholder + ")"
 }
 
+type testDirectionalMappedOrderField string
+
+func (f testDirectionalMappedOrderField) Column() string { return "sort_key(" + string(f) + ")" }
+func (f testDirectionalMappedOrderField) String() string { return string(f) }
+
+func (f testDirectionalMappedOrderField) DirectionalColumn(direction OrderDirection) string {
+	return string(f) + "_" + string(direction)
+}
+
+func (f testDirectionalMappedOrderField) DirectionalCursorValue(direction OrderDirection, placeholder string) string {
+	return "map_" + string(direction) + "(" + placeholder + ")"
+}
+
+func (f testDirectionalMappedOrderField) MapCursorValue(placeholder string) string {
+	return "sort_key(" + placeholder + ")"
+}
+
 func TestCursor_SQLFragment_MappedOrderField(t *testing.T) {
 	t.Parallel()
 
@@ -184,5 +201,53 @@ func TestCursor_SQLFragment_MappedOrderField(t *testing.T) {
 			"(sort_key(section_title) <= sort_key(@cursor_field_value)) AND NOT (sort_key(section_title) = sort_key(@cursor_field_value) AND id > @cursor_id) ORDER BY sort_key(section_title) DESC, id DESC LIMIT @cursor_limit",
 			cursor.SQLFragment(),
 		)
+	})
+
+	t.Run("ascending tail keeps the mapping while flipping the comparison", func(t *testing.T) {
+		t.Parallel()
+
+		cursor := NewCursor(10, &key, Tail, OrderBy[testMappedOrderField]{
+			Field:     "section_title",
+			Direction: OrderDirectionAsc,
+		})
+
+		assert.Equal(
+			t,
+			"(sort_key(section_title) <= sort_key(@cursor_field_value)) AND NOT (sort_key(section_title) = sort_key(@cursor_field_value) AND id > @cursor_id) ORDER BY sort_key(section_title) DESC, id DESC LIMIT @cursor_limit",
+			cursor.SQLFragment(),
+		)
+	})
+
+	t.Run("descending tail keeps the mapping while flipping the comparison", func(t *testing.T) {
+		t.Parallel()
+
+		cursor := NewCursor(10, &key, Tail, OrderBy[testMappedOrderField]{
+			Field:     "section_title",
+			Direction: OrderDirectionDesc,
+		})
+
+		assert.Equal(
+			t,
+			"(sort_key(section_title) >= sort_key(@cursor_field_value)) AND NOT (sort_key(section_title) = sort_key(@cursor_field_value) AND id < @cursor_id) ORDER BY sort_key(section_title) ASC, id ASC LIMIT @cursor_limit",
+			cursor.SQLFragment(),
+		)
+	})
+
+	t.Run("directional mapping wins when a field implements both", func(t *testing.T) {
+		t.Parallel()
+
+		cursor := NewCursor(10, &key, Head, OrderBy[testDirectionalMappedOrderField]{
+			Field:     "due",
+			Direction: OrderDirectionAsc,
+		})
+
+		fragment := cursor.SQLFragment()
+
+		assert.Equal(
+			t,
+			"(due_ASC >= map_ASC(@cursor_field_value)) AND NOT (due_ASC = map_ASC(@cursor_field_value) AND id < @cursor_id) ORDER BY due_ASC ASC, id ASC LIMIT @cursor_limit",
+			fragment,
+		)
+		assert.NotContains(t, fragment, "sort_key(")
 	})
 }
