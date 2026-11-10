@@ -40,4 +40,15 @@ type (
 		DirectionalColumn(direction OrderDirection) string
 		DirectionalCursorValue(direction OrderDirection, placeholder string) string
 	}
+
+	// MappedOrderField sorts by an expression derived from the stored
+	// column, e.g. a natural-sort key. Cursor keys hold the raw column
+	// value, so MapCursorValue must wrap the bound cursor value in the
+	// same expression as Column: comparing a mapped column against an
+	// unmapped cursor value silently drops rows from every page but the
+	// first.
+	MappedOrderField interface {
+		OrderField
+		MapCursorValue(placeholder string) string
+	}
 )

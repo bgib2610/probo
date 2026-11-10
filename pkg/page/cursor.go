@@ -67,9 +67,12 @@ func (c *Cursor[T]) SQLFragment() string {
 	fieldName := c.OrderBy.Field.Column()
 	cursorValue := "@cursor_field_value"
 
-	if f, ok := any(c.OrderBy.Field).(DirectionalOrderField); ok {
+	switch f := any(c.OrderBy.Field).(type) {
+	case DirectionalOrderField:
 		fieldName = f.DirectionalColumn(c.OrderBy.Direction)
 		cursorValue = f.DirectionalCursorValue(c.OrderBy.Direction, cursorValue)
+	case MappedOrderField:
+		cursorValue = f.MapCursorValue(cursorValue)
 	}
 
 	var orderDirection string

@@ -141,3 +141,48 @@ func TestCursor_SQLFragment_DirectionalOrderField(t *testing.T) {
 		)
 	})
 }
+
+type testMappedOrderField string
+
+func (f testMappedOrderField) Column() string { return "sort_key(" + string(f) + ")" }
+func (f testMappedOrderField) String() string { return string(f) }
+
+func (f testMappedOrderField) MapCursorValue(placeholder string) string {
+	return "sort_key(" + placeholder + ")"
+}
+
+func TestCursor_SQLFragment_MappedOrderField(t *testing.T) {
+	t.Parallel()
+
+	key := NewCursorKey(gid.New(gid.NewTenantID(), 1), "6.1")
+
+	t.Run("ascending head maps the cursor value into the column space", func(t *testing.T) {
+		t.Parallel()
+
+		cursor := NewCursor(10, &key, Head, OrderBy[testMappedOrderField]{
+			Field:     "section_title",
+			Direction: OrderDirectionAsc,
+		})
+
+		assert.Equal(
+			t,
+			"(sort_key(section_title) >= sort_key(@cursor_field_value)) AND NOT (sort_key(section_title) = sort_key(@cursor_field_value) AND id < @cursor_id) ORDER BY sort_key(section_title) ASC, id ASC LIMIT @cursor_limit",
+			cursor.SQLFragment(),
+		)
+	})
+
+	t.Run("descending head maps the cursor value into the column space", func(t *testing.T) {
+		t.Parallel()
+
+		cursor := NewCursor(10, &key, Head, OrderBy[testMappedOrderField]{
+			Field:     "section_title",
+			Direction: OrderDirectionDesc,
+		})
+
+		assert.Equal(
+			t,
+			"(sort_key(section_title) <= sort_key(@cursor_field_value)) AND NOT (sort_key(section_title) = sort_key(@cursor_field_value) AND id > @cursor_id) ORDER BY sort_key(section_title) DESC, id DESC LIMIT @cursor_limit",
+			cursor.SQLFragment(),
+		)
+	})
+}
