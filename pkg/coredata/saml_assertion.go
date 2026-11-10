@@ -57,7 +57,7 @@ VALUES (@id, @organization_id, @used_at, @expires_at)
 
 	_, err := conn.Exec(ctx, query, args)
 	if err != nil {
-		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == "23505" && pgErr.ConstraintName == "iam_saml_assertions_pkey" {
+		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == "23505" && pgErr.ConstraintName == "auth_saml_assertions_pkey" {
 			return ErrResourceAlreadyExists
 		}
 
