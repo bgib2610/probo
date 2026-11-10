@@ -167,23 +167,19 @@
     "messages": {
       "successTitle": "Success",
       "archived": "Document archived successfully.",
-      "unarchived": "Document unarchived successfully.",
-      "draftDeleted": "Draft deleted successfully."
+      "unarchived": "Document unarchived successfully."
     },
     "errors": {
       "title": "Error",
       "archive": "Failed to archive document",
       "unarchive": "Failed to unarchive document",
-      "deleteDraft": "Failed to delete draft",
       "generatePdf": "Failed to generate PDF"
     },
     "confirmations": {
-      "archive": "This will archive the document \"{{title}}\". It will no longer be editable.",
-      "deleteDraft": "This will delete the current draft and revert to the last published version."
+      "archive": "This will archive the document \"{{title}}\". It will no longer be editable."
     },
     "actions": {
       "downloadPdf": "Download PDF",
-      "deleteDraft": "Delete draft",
       "archive": "Archive",
       "archiveDocument": "Archive document",
       "unarchiveDocument": "Unarchive document",
@@ -325,6 +321,32 @@
       "anonymous": "Collaborator",
       "inactive": "{{name}} (inactive)",
       "overflow": "{{count}} more people"
+    },
+    "review": {
+      "viewing": "Viewing",
+      "editing": "Editing",
+      "suggesting": "Suggesting",
+      "comment": "Comment",
+      "reply": "Reply",
+      "resolve": "Resolve",
+      "reopen": "Reopen",
+      "accept": "Accept",
+      "reject": "Reject",
+      "edit": "Edit",
+      "delete": "Delete",
+      "save": "Save",
+      "showResolved": "Show resolved",
+      "cancel": "Cancel",
+      "history": "Comments",
+      "resolvedEmpty": "No resolved comments",
+      "detached": "Detached from the text",
+      "commentPlaceholder": "Add a comment",
+      "replyPlaceholder": "Reply",
+      "suggestionBy": "Suggestion by {{name}}",
+      "commentFailed": "Could not add the comment",
+      "suggestionFailed": "Could not start the suggestion",
+      "selectComment": "Select comment by {{name}}",
+      "selectSuggestion": "Select suggestion by {{name}}"
     }
   },
   "documentSignaturesPage": {

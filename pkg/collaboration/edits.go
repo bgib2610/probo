@@ -32,6 +32,7 @@ import (
 	"go.probo.inc/probo/pkg/coredata"
 	"go.probo.inc/probo/pkg/gid"
 	"go.probo.inc/probo/pkg/prosemirror"
+	"go.probo.inc/probo/pkg/richtext"
 	"go.probo.inc/probo/pkg/validator"
 )
 
@@ -120,7 +121,7 @@ func (s *Service) ApplyContent(
 	scope coredata.Scoper,
 	req CollaborationApplyContentRequest,
 ) (*CollaborationWriteResult, error) {
-	sanitized, err := prosemirror.SanitizeDocumentJSON(req.Content)
+	sanitized, err := richtext.DocumentSchema.Sanitize(req.Content)
 	if err != nil {
 		return nil, fmt.Errorf("cannot sanitize collaboration content: %w", err)
 	}
@@ -305,6 +306,15 @@ func (s *Service) ApplyEdits(
 
 	defer func() { _ = opened.Document.Close() }()
 
+	spans, err := BodySpans(opened.Document)
+	if err != nil {
+		return nil, err
+	}
+
+	if HasOpenSuggestions(spans) {
+		return nil, ErrOpenSuggestions
+	}
+
 	hasHeads, err := opened.Document.HasHeads(req.BaseHeads)
 	if err != nil {
 		return nil, fmt.Errorf("cannot verify collaboration base heads: %w", err)
@@ -363,7 +373,7 @@ func (s *Service) ApplyEdits(
 		return nil, fmt.Errorf("cannot encode edited collaboration document: %w", err)
 	}
 
-	sanitized, err := prosemirror.SanitizeDocumentJSON(string(encoded))
+	sanitized, err := richtext.DocumentSchema.Sanitize(string(encoded))
 	if err != nil {
 		return nil, fmt.Errorf("cannot sanitize edited collaboration document: %w", err)
 	}

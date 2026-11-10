@@ -104,12 +104,14 @@ type (
 		PublishEphemeral func(ctx context.Context, frame []byte) error
 		// Session is the handshake already completed with this client. The
 		// peer reply has been written; document loading must not delay it.
-		Session      *collabpkg.ServerSession
-		DisplayName  string
-		IdentityID   string
-		AvatarURL    string
-		RecordActors func(ctx context.Context, actors [][]byte) error
-		Incoming     <-chan Incoming
+		Session         *collabpkg.ServerSession
+		DisplayName     string
+		IdentityID      string
+		AvatarURL       string
+		RecordActors    func(ctx context.Context, actors [][]byte) error
+		Incoming        <-chan Incoming
+		OpenSuggestions func(ctx context.Context, ids []string) (map[string]bool, error)
+		CanUpdate       bool
 	}
 )
 
@@ -122,7 +124,7 @@ func (h *Handler) HandleRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scope, document, err := h.authorize(r.Context(), documentID)
+	scope, document, canUpdate, err := h.authorize(r.Context(), documentID)
 	if err != nil {
 		h.renderAuthorizationError(w, err)
 		return
@@ -231,6 +233,7 @@ func (h *Handler) HandleRepo(w http.ResponseWriter, r *http.Request) {
 		IdentityID:   identityID,
 		AvatarURL:    avatarURL,
 		Incoming:     incoming,
+		CanUpdate:    canUpdate,
 		PublishEphemeral: func(ctx context.Context, frame []byte) error {
 			return h.Probo.Collaboration.NotifyEphemeral(
 				ctx,
@@ -259,6 +262,12 @@ func (h *Handler) HandleRepo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if !canUpdate {
+		config.OpenSuggestions = func(ctx context.Context, ids []string) (map[string]bool, error) {
+			return h.Probo.Documents.LoadOpenSuggestionIDs(ctx, scope, documentID, ids)
+		}
+	}
+
 	if err := ServeRepoCollaboration(collaborationCtx, connection, lease, syncState, config); err != nil {
 		h.closeWithError(collaborationCtx, connection, documentIDString, err)
 	}
@@ -267,7 +276,7 @@ func (h *Handler) HandleRepo(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) authorize(
 	ctx context.Context,
 	documentID gid.GID,
-) (*coredata.Scope, *coredata.Document, error) {
+) (*coredata.Scope, *coredata.Document, bool, error) {
 	identity := authn.IdentityFromContext(ctx)
 	session := authn.SessionFromContext(ctx)
 
@@ -275,7 +284,7 @@ func (h *Handler) authorize(
 
 	document, err := h.Probo.Documents.LoadDocument(ctx, scope, documentID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot load document: %w", err)
+		return nil, nil, false, fmt.Errorf("cannot load document: %w", err)
 	}
 
 	params := iam.AuthorizeParams{
@@ -289,11 +298,34 @@ func (h *Handler) authorize(
 	}
 
 	authScope, err := h.IAM.Authorizer.Authorize(ctx, params)
-	if err != nil {
-		return nil, nil, fmt.Errorf("cannot authorize document update: %w", err)
+	if err == nil {
+		return authScope, document, true, nil
 	}
 
-	return authScope, document, nil
+	if !insufficientAuthorization(err) {
+		return nil, nil, false, fmt.Errorf("cannot authorize document update: %w", err)
+	}
+
+	params.Action = probo.ActionDocumentComment
+
+	authScope, err = h.IAM.Authorizer.Authorize(ctx, params)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("cannot authorize document collaboration: %w", err)
+	}
+
+	return authScope, document, false, nil
+}
+
+func insufficientAuthorization(err error) bool {
+	if _, ok := errors.AsType[*iam.ErrInsufficientPermissions](err); ok {
+		return true
+	}
+
+	if _, ok := errors.AsType[*iam.ErrInsufficientOAuth2Scope](err); ok {
+		return true
+	}
+
+	return false
 }
 
 func (h *Handler) releaseSeedClaim(
@@ -675,9 +707,9 @@ func ServeRepoCollaboration(
 				continue
 			}
 
-			reply, fanout, err := conn.Receive(message.Data)
+			reply, fanout, err := applyRepoFrame(ctx, conn, lease, config, message.Data)
 			if err != nil {
-				return fmt.Errorf("cannot process repo frame: %w", err)
+				return err
 			}
 
 			if err := writeRepoReply(
@@ -757,13 +789,7 @@ func ServeRepoCollaboration(
 			if wake.Refresh && config.Refresher != nil {
 				var changed bool
 
-				revision, changed, err = config.Refresher.Refresh(
-					ctx,
-					config.Scope,
-					config.DocumentID,
-					lease.Collaboration().Document,
-					revision,
-				)
+				revision, changed, err = refreshDocument(ctx, lease, config, revision)
 				if err != nil {
 					return fmt.Errorf("cannot refresh repo collaboration: %w", err)
 				}
@@ -790,13 +816,7 @@ func ServeRepoCollaboration(
 
 			var changed bool
 
-			revision, changed, err = config.Refresher.Refresh(
-				ctx,
-				config.Scope,
-				config.DocumentID,
-				lease.Collaboration().Document,
-				revision,
-			)
+			revision, changed, err = refreshDocument(ctx, lease, config, revision)
 			if err != nil {
 				return fmt.Errorf("cannot refresh repo collaboration: %w", err)
 			}
@@ -817,6 +837,135 @@ func ServeRepoCollaboration(
 			}
 		}
 	}
+}
+
+// applyRepoFrame applies one inbound frame to the shared room document under the
+// room document lock so the comment-only snapshot/validate/restore is atomic
+// with every other connection's mutation. Without the lock a concurrent editor
+// update on another socket can land between the before and after snapshots and
+// be rolled back, erasing that editor's change.
+func applyRepoFrame(
+	ctx context.Context,
+	conn *collabpkg.ServerConn,
+	lease *RoomLease,
+	config RepoConfig,
+	data []byte,
+) (reply [][]byte, fanout []byte, err error) {
+	lease.LockDocument()
+	defer lease.UnlockDocument()
+
+	var beforeSpans []automerge.Span
+	if !config.CanUpdate && lease.Collaboration() != nil && lease.Collaboration().Document != nil {
+		beforeSpans, err = collaboration.BodySpans(lease.Collaboration().Document)
+		if err != nil {
+			return nil, nil, fmt.Errorf("cannot read collaboration spans: %w", err)
+		}
+	}
+
+	reply, fanout, err = conn.Receive(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot process repo frame: %w", err)
+	}
+
+	if config.CanUpdate || fanout != nil || lease.Collaboration() == nil || lease.Collaboration().Document == nil {
+		return reply, fanout, nil
+	}
+
+	kind, kindErr := collabpkg.FrameKind(data)
+	if kindErr != nil {
+		return restoreCommentOnlySpans(
+			lease,
+			beforeSpans,
+			fmt.Errorf("cannot read repo frame type: %w", kindErr),
+		)
+	}
+
+	frameType := collabpkg.MessageType(kind)
+	if frameType != collabpkg.MessageSync && frameType != collabpkg.MessageRequest {
+		return reply, fanout, nil
+	}
+
+	afterSpans, spanErr := collaboration.BodySpans(lease.Collaboration().Document)
+	if spanErr != nil {
+		return restoreCommentOnlySpans(
+			lease,
+			beforeSpans,
+			fmt.Errorf("cannot read collaboration spans: %w", spanErr),
+		)
+	}
+
+	openSuggestionIDs := map[string]bool{}
+
+	newIDs := collaboration.NewSuggestionIDs(beforeSpans, afterSpans)
+	if len(newIDs) > 0 && config.OpenSuggestions != nil {
+		openSuggestionIDs, err = config.OpenSuggestions(ctx, newIDs)
+		if err != nil {
+			return restoreCommentOnlySpans(
+				lease,
+				beforeSpans,
+				fmt.Errorf("cannot load open collaboration suggestions: %w", err),
+			)
+		}
+	}
+
+	if collaboration.CommentChangeAllowed(beforeSpans, afterSpans, openSuggestionIDs) {
+		return reply, fanout, nil
+	}
+
+	if err := restoreCommentOnlyDocument(lease, beforeSpans); err != nil {
+		return nil, nil, err
+	}
+
+	restored, syncErr := conn.SyncChanged()
+	if syncErr != nil {
+		return nil, nil, fmt.Errorf("cannot sync restored collaboration spans: %w", syncErr)
+	}
+
+	reply = append(reply, restored...)
+
+	return reply, fanout, nil
+}
+
+func restoreCommentOnlySpans(
+	lease *RoomLease,
+	beforeSpans []automerge.Span,
+	err error,
+) ([][]byte, []byte, error) {
+	if restoreErr := restoreCommentOnlyDocument(lease, beforeSpans); restoreErr != nil {
+		return nil, nil, restoreErr
+	}
+
+	return nil, nil, err
+}
+
+func restoreCommentOnlyDocument(lease *RoomLease, beforeSpans []automerge.Span) error {
+	if err := collaboration.WriteBodySpans(lease.Collaboration().Document, beforeSpans); err != nil {
+		return fmt.Errorf("cannot restore collaboration spans: %w", err)
+	}
+
+	if _, err := lease.Collaboration().Document.Commit("Reject direct edit", time.Now()); err != nil && !errors.Is(err, automerge.ErrNoOperations) {
+		return fmt.Errorf("cannot commit restored collaboration spans: %w", err)
+	}
+
+	return nil
+}
+
+func refreshDocument(
+	ctx context.Context,
+	lease *RoomLease,
+	config RepoConfig,
+	revision int64,
+) (int64, bool, error) {
+	lease.LockDocument()
+	defer lease.UnlockDocument()
+
+	return config.Refresher.Refresh(
+		ctx,
+		config.Scope,
+		config.DocumentID,
+		lease.Collaboration().Document,
+		revision,
+	)
 }
 
 func repoReadResult(err error) error {
