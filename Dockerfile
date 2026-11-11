@@ -43,9 +43,13 @@ FROM ubuntu:24.04
 RUN useradd -m probo \
 	&& apt-get update \
 	&& apt-get upgrade -y \
-	&& apt-get install -y --no-install-recommends ca-certificates libcap2-bin \
+	&& apt-get install -y --no-install-recommends ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
 
+# NOTE: unlike Dockerfile.release, no setcap CAP_NET_BIND_SERVICE here.
+# Render's container runtime refuses to execute binaries with file
+# capabilities (EPERM / "Operation not permitted", exit 126), and on
+# Render probod only binds the unprivileged $PORT (default 10000).
 COPY --from=builder /src/bin/probod /usr/local/bin/probod
 COPY --from=builder /src/bin/probod-bootstrap /usr/local/bin/probod-bootstrap
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -53,7 +57,6 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/probod \
 	&& chmod +x /usr/local/bin/probod-bootstrap \
 	&& chmod +x /usr/local/bin/entrypoint.sh \
-	&& setcap CAP_NET_BIND_SERVICE=+eip /usr/local/bin/probod \
 	&& mkdir -p /etc/probod \
 	&& chown probo:probo /etc/probod
 
