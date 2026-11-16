@@ -35,10 +35,15 @@ COPY . .
 # WITH_APPS=1 runs codegen (gqlgen/mcpgen/relay) and production frontend
 # builds (console, compliance-portal, employee-portal, emails) before
 # compiling probod with the embedded dist assets.
-# NPROC=1 forces a serial build: the upstream Makefile defaults to
-# --jobs=$(NPROC), and the gqlgen codegen targets race the frontend
-# dist builds (go:embed validation fails with "pattern dist: no matching
-# files found" when codegen wins the race).
+#
+# Race fix: gqlgen/mcpgen codegen loads the whole Go module, which
+# contains go:embed dist directives that only exist after the frontend
+# npm builds. Under the Makefile's default --jobs=$(NPROC) the codegen
+# targets race the frontend builds, and even serially `generate` runs
+# before `embed` (go:embed validation fails with "pattern dist: no
+# matching files found"). So build the frontend/embedded assets first,
+# in their own layer, then compile the binaries.
+RUN make NPROC=1 relay @probo/emails @probo/console @probo/compliance-portal @probo/employee-portal
 RUN make NPROC=1 bin/probod bin/probod-bootstrap WITH_APPS=1
 
 # Runtime: same shape as Dockerfile.release
